@@ -166,6 +166,15 @@ bool try_to_mark_non_idempotent(std::atomic<Item>* visited, Index target) {
   return true;
 }
   
+template <class Index, class Item>
+bool try_to_mark_non_idempotent_backtrack(std::atomic<Item>* visited, Index target, Index source) {
+  Item orig = -1;
+  if (! visited[target].compare_exchange_strong(orig, source))
+    return false;
+  return true;
+}
+  
+
 template <class Adjlist, class Item, bool idempotent>
 bool try_to_mark(const Adjlist& graph,
                  std::atomic<Item>* visited,
@@ -183,6 +192,29 @@ bool try_to_mark(const Adjlist& graph,
     }
   } else {
     return try_to_mark_non_idempotent<vtxid_type,Item>(visited, target);
+  }
+}
+
+  
+template <class Adjlist, class Item, bool idempotent>
+bool try_to_mark_backtrack(const Adjlist& graph,
+                 std::atomic<Item>* visited,
+                 typename Adjlist::vtxid_type target,
+                 typename Adjlist::vtxid_type source) {
+  using vtxid_type = typename Adjlist::vtxid_type;
+  const vtxid_type max_outdegree_for_idempotent = 30;
+  auto unvisited = -1;
+  if (unvisited<visited[target].load(std::memory_order_relaxed))
+    return false;
+  if (idempotent) {
+    if (graph.adjlists[target].get_out_degree() <= max_outdegree_for_idempotent) {
+      visited[target].store(source, std::memory_order_relaxed);
+      return true;
+    } else {
+      return try_to_mark_non_idempotent_backtrack<vtxid_type,Item>(visited, target, source);
+    }
+  } else {
+    return try_to_mark_non_idempotent_backtrack<vtxid_type,Item>(visited, target, source);
   }
 }
 
@@ -247,6 +279,7 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
   fill_array_par(visited, nb_vertices, 0);
   std::atomic<int>* matching = data::mynew_array<std::atomic<int>>(nb_vertices);
   fill_array_par(matching, nb_vertices, -1);
+  std::atomic<int> tailOfAugmentingPath(-1);
   LOG_BASIC(ALGO_PHASE);
   auto graph_alias = get_alias_of_adjlist(graph);
   Frontier frontier(graph_alias);
@@ -297,6 +330,49 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
             }
       });
     });
+    bool firstClear = true;
+    for (vtxid_type i = 0; i < nb_vertices; ++i) {
+      if (matching[i].load()>-1)
+        continue;
+      // Only clear here on first iteration.
+      if (firstClear){
+        fill_array_par(visited, nb_vertices, -1);
+        firstClear=false;
+      }
+      frontier.clear();
+      frontier.push_vertex_back(i);
+      nb_since_last_split.init(0);
+      visited[i].store(i);
+      PARALLEL_WHILE(frontier, size, fork, set_in_env, [&] (Frontier& frontier) {
+          nb_since_last_split.mine() +=    
+            frontier.for_at_most_nb_outedges_labeled(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex, vtxid_type src_vertex) {
+              if (try_to_mark_backtrack<Adjlist, int, idempotent>(graph, visited, other_vertex, src_vertex)){
+                if(matching[other_vertex]==-1){
+                  tailOfAugmentingPath.store(other_vertex, std::memory_order_relaxed);
+                } else {
+                  frontier.push_vertex_back(matching[other_vertex]);
+                }
+              }
+        });
+      });
+
+      // This points to the tail, which is matched to vertex v
+      // v is either unmatched, or matched.
+      if (tailOfAugmentingPath.load()>-1){
+        vtxid_type grandparent = tailOfAugmentingPath.load();
+        vtxid_type parent, child;
+        do {
+          parent = visited[grandparent];
+          child = matching[parent].load();
+          matching[parent].store(grandparent);
+          matching[grandparent].store(parent);
+          grandparent = child;
+        } while (grandparent != -1);
+        // Only need to reinitialize visited when AP found.
+        fill_array_par(visited, nb_vertices, -1);
+        tailOfAugmentingPath.store(-1);
+      }
+    }
   }
   vtxid_type nb_matched = 0;
   for (vtxid_type i = 0; i <nb_vertices; ++i){
