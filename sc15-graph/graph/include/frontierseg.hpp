@@ -44,16 +44,21 @@ public:
   
   class edgelist_type {
   public:
-    
+    vtxid_type label;
     const_vtxid_pointer lo;
     const_vtxid_pointer hi;
     
     edgelist_type()
-    : lo(nullptr), hi(nullptr) { }
+    : lo(nullptr), hi(nullptr), label(-1) { }
     
     edgelist_type(size_type nb, const_vtxid_pointer edges)
     : lo(edges), hi(edges + nb) { }
     
+    
+    edgelist_type(size_type nb, const_vtxid_pointer edges, vtxid_type _label)
+    : lo(edges), hi(edges + nb), label(_label) { }
+    
+
     size_type size() const {
       return size_type(hi - lo);
     }
@@ -83,12 +88,20 @@ public:
     void swap(edgelist_type& other) {
       std::swap(lo, other.lo);
       std::swap(hi, other.hi);
+      std::swap(label,other.label);
     }
     
     template <class Body>
     void for_each(const Body& func) const {
       for (auto e = lo; e < hi; e++)
         func(*e);
+    }
+
+    
+    template <class Body>
+    void labeled_for_each(const Body& func) const {
+      for (auto e = lo; e < hi; e++)
+        func(*e,label);
     }
   };
   
@@ -108,7 +121,7 @@ private:
     graph_type g = get_graph();
     size_type degree = out_degree_of_vertex(g, v);
     vtxid_type* neighbors = neighbors_of_vertex(g, v);
-    return edgelist_type(vtxid_type(degree), neighbors);
+    return edgelist_type(vtxid_type(degree), neighbors, v);
   }
   
   /*---------------------------------------------------------------------*/
@@ -430,6 +443,65 @@ public:
         // process all of the back
         nb_left -= b_size;
         b.for_each(func);
+        b.clear();
+      }
+    }
+    return nb - nb_left;
+  }
+
+
+  // Warning: "func" may only call "push_vertex_back"
+  // Returns the number of edges that have been processed
+  template <class Body>
+  size_type for_at_most_nb_outedges_labeled(size_type nb, const Body& func) {
+    size_type nb_left = nb;
+    size_type f_size = f.size();
+    // process front if not empty
+    if (f_size > 0) {
+      if (f_size >= nb_left) {
+        // process only part of the front
+        auto e = edgelist_type::take(f, nb_left);
+        f = edgelist_type::drop(f, nb_left);
+        e.labeled_for_each(func);
+        return nb;
+      } else {
+        // process all of the front, to begin with
+        nb_left -= f_size;
+        f.labeled_for_each(func);
+        f.clear();
+     }
+    }
+    // assume now front to be empty, and work on middle
+    while (nb_left > 0 && ! m.empty()) {
+      vtxid_type v = m.pop_back();
+      edgelist_type edges = create_edgelist(v);
+      size_type d = edges.size();
+      if (d <= nb_left) {
+        // process all of the edges associated with v
+        edges.labeled_for_each(func);
+        nb_left -= d;
+      } else { // d > nb_left
+        // save the remaining edges into the front
+        f = edgelist_type::drop(edges, nb_left);
+        auto edges2 = edgelist_type::take(edges, nb_left);
+        edges2.labeled_for_each(func);
+        return nb;
+      }
+    }
+    // process the back if not empty
+    size_type b_size = b.size();
+    if (nb_left > 0 && b_size > 0) {
+      if (b_size >= nb_left) {
+        // process only part of the back, leave the rest to the front
+        auto e = edgelist_type::take(b, nb_left);
+        f = edgelist_type::drop(b, nb_left);
+        b.clear();
+        e.labeled_for_each(func);
+        return nb;
+      } else {
+        // process all of the back
+        nb_left -= b_size;
+        b.labeled_for_each(func);
         b.clear();
       }
     }

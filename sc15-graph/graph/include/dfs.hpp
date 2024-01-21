@@ -186,6 +186,48 @@ bool try_to_mark(const Adjlist& graph,
   }
 }
 
+  
+template <class Adjlist, class Item, bool idempotent>
+bool try_to_mark_and_match(const Adjlist& graph,
+                 std::atomic<Item>* visited,
+                 std::atomic<Item>* matching,
+                 typename Adjlist::vtxid_type target,
+                 typename Adjlist::vtxid_type source) {
+  using vtxid_type = typename Adjlist::vtxid_type;
+  const vtxid_type max_outdegree_for_idempotent = 30;
+  auto unmatched = -1;
+  if (visited[target].load(std::memory_order_relaxed))
+    return false;
+  if (idempotent) {
+    if (graph.adjlists[target].get_out_degree() <= max_outdegree_for_idempotent) {
+      visited[target].store(1, std::memory_order_relaxed);
+      if(matching[source].compare_exchange_strong(unmatched, target)){
+        matching[target]=source;
+      }
+      return true;
+    } else {
+      if(try_to_mark_non_idempotent<vtxid_type,Item>(visited, target)){
+        if(matching[source].compare_exchange_strong(unmatched, target)){
+          matching[target]=source;
+        }
+        return true;
+      } else {
+        return false;
+      }
+    }
+  } else {
+      if(try_to_mark_non_idempotent<vtxid_type,Item>(visited, target)){
+        if(matching[source].compare_exchange_strong(unmatched, target)){
+          matching[target]=source;
+        }
+        return true;
+      } else {
+        return false;
+      }
+  }
+}
+
+
 extern int our_pseudodfs_cutoff;
 extern int our_pseudodfs_poll_cutoff;
 extern int our_pseudodfs_split_cutoff;
@@ -203,6 +245,8 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
   vtxid_type nb_vertices = graph.get_nb_vertices();
   std::atomic<int>* visited = data::mynew_array<std::atomic<int>>(nb_vertices);
   fill_array_par(visited, nb_vertices, 0);
+  std::atomic<int>* matching = data::mynew_array<std::atomic<int>>(nb_vertices);
+  fill_array_par(matching, nb_vertices, -1);
   LOG_BASIC(ALGO_PHASE);
   auto graph_alias = get_alias_of_adjlist(graph);
   Frontier frontier(graph_alias);
@@ -233,13 +277,32 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
   };
   if (frontier.nb_outedges() == 0)
     return visited;
-  PARALLEL_WHILE(frontier, size, fork, set_in_env, [&] (Frontier& frontier) {
-      nb_since_last_split.mine() +=    
-        frontier.for_at_most_nb_outedges(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex) {
-          if (try_to_mark<Adjlist, int, idempotent>(graph, visited, other_vertex))
-            frontier.push_vertex_back(other_vertex);
+  bool directedMatching = false;
+  if (directedMatching){
+    PARALLEL_WHILE(frontier, size, fork, set_in_env, [&] (Frontier& frontier) {
+        nb_since_last_split.mine() +=    
+          frontier.for_at_most_nb_outedges_labeled(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex, vtxid_type src_vertex) {
+            if (try_to_mark<Adjlist, int, idempotent>(graph, visited, other_vertex)){
+              matching[other_vertex]=src_vertex;
+              frontier.push_vertex_back(other_vertex);
+            }
+      });
     });
-  });
+  } else {
+    PARALLEL_WHILE(frontier, size, fork, set_in_env, [&] (Frontier& frontier) {
+        nb_since_last_split.mine() +=    
+          frontier.for_at_most_nb_outedges_labeled(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex, vtxid_type src_vertex) {
+            if (try_to_mark_and_match<Adjlist, int, idempotent>(graph, visited, matching, other_vertex, src_vertex)){
+              frontier.push_vertex_back(other_vertex);
+            }
+      });
+    });
+  }
+  vtxid_type nb_matched = 0;
+  for (vtxid_type i = 0; i <nb_vertices; ++i){
+    nb_matched+=matching[i]>-1;
+  }
+  std::cout << "nb_matched\t" << nb_matched << std::endl;
   return visited;
 }
 
