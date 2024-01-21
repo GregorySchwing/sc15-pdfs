@@ -289,8 +289,8 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
   LOG_BASIC(ALGO_PHASE);
   auto graph_alias = get_alias_of_adjlist(graph);
   Frontier frontier(graph_alias);
-  frontier.push_vertex_back(source);
-  visited[source].store(1, std::memory_order_relaxed);
+  //frontier.push_vertex_back(source);
+  //visited[source].store(1, std::memory_order_relaxed);
   data::perworker::array<int> nb_since_last_split;
   nb_since_last_split.init(0);
   auto size = [&] (Frontier& frontier) {
@@ -314,8 +314,22 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
   auto set_in_env = [graph_alias] (Frontier& f) {
     f.set_graph(graph_alias);
   };
-  if (frontier.nb_outedges() == 0)
-    return visited;
+
+  //if (frontier.nb_outedges() == 0)
+  //  return visited;
+  vtxid_type root=0;
+  for (; root < nb_vertices; ++root) {
+    frontier.push_vertex_back(root);
+    if (frontier.nb_outedges() != 0){
+        break;
+    } else {
+      frontier.clear();
+    }
+  }
+  visited[root].store(1, std::memory_order_relaxed);
+  nb_since_last_split.init(0);
+
+
   bool directedMatching = false;
   if (directedMatching){
     PARALLEL_WHILE(frontier, size, fork, set_in_env, [&] (Frontier& frontier) {
@@ -337,8 +351,8 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
       });
     });
     bool firstClear = true;
-    for (vtxid_type i = 0; i < nb_vertices; ++i) {
-      if (matching[i].load()>-1)
+    for (; root < nb_vertices; ++root) {
+      if (matching[root].load()>-1)
         continue;
       // Only clear here on first iteration.
       if (firstClear){
@@ -346,9 +360,9 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
         firstClear=false;
       }
       frontier.clear();
-      frontier.push_vertex_back(i);
+      frontier.push_vertex_back(root);
       nb_since_last_split.init(0);
-      visited[i].store(i);
+      visited[root].store(root);
       PARALLEL_WHILE_GOAL(frontier, size, fork, set_in_env, tailOfAugmentingPath, [&] (Frontier& frontier) {
           nb_since_last_split.mine() +=    
             frontier.for_at_most_nb_outedges_labeled(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex, vtxid_type src_vertex) {
