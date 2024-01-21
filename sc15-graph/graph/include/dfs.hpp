@@ -199,7 +199,6 @@ bool try_to_mark(const Adjlist& graph,
 template <class Adjlist, class Item, bool idempotent>
 bool try_to_mark(const Adjlist& graph,
                  std::atomic<Item>* visited,
-                 std::atomic<Item>* matching,
                  typename Adjlist::vtxid_type target,
                  typename Adjlist::vtxid_type src) {
   using vtxid_type = typename Adjlist::vtxid_type;
@@ -218,12 +217,12 @@ bool try_to_match(const Adjlist& graph,
                  std::atomic<Item>& tailOfAugmentingPath,
                  typename Adjlist::vtxid_type target,
                  typename Adjlist::vtxid_type src) {
-  using vtxid_type = typename Adjlist::vtxid_type;
-  auto expected = -1;
-  // Only one AP will be found.
-  // This may be unneccessary atomicity, since standard store is atomic.
-  // Will measure different versions of the algorithm.
-  return (matching[target]==-1&&tailOfAugmentingPath.compare_exchange_strong(expected, target));
+  if(matching[target]==-1){
+    tailOfAugmentingPath.store(target,std::memory_order_relaxed);
+    return true;
+  } else{
+    return false;
+  }
 }
 
 extern int our_pseudodfs_cutoff;
@@ -270,9 +269,16 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
   auto set_in_env = [graph_alias] (Frontier& f) {
     f.set_graph(graph_alias);
   };
+  int printFreq = 1000;
+  int printFreqCounter = 0;
   for (vtxid_type i = 0; i < nb_vertices; ++i) {
-    if (matching[i]>-1)
+    if (matching[i].load()>-1)
       continue;
+    printFreqCounter++;
+    if (printFreqCounter==printFreq){
+      std::cout << "Iteration " << i << "/" << nb_vertices << '\r';
+      printFreqCounter = 0;
+    }
     frontier.clear();
     frontier.push_vertex_back(i);
     if (frontier.nb_outedges() == 0)
@@ -288,7 +294,7 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
             if(tailOfAugmentingPath.load(std::memory_order_relaxed)>-1)
               return;
             // If I claim an inner vertex
-            if (try_to_mark<Adjlist, int, idempotent>(graph, visited, matching, other_vertex, src_vertex)){
+            if (try_to_mark<Adjlist, int, idempotent>(graph, visited, other_vertex, src_vertex)){
               // Try to match said vertex.
               if(try_to_match<Adjlist, int, idempotent>(graph, visited, matching, tailOfAugmentingPath, other_vertex, src_vertex)){
                 // Successfully found AP.
@@ -302,14 +308,14 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
     });
     // This points to the tail, which is matched to vertex v
     // v is either unmatched, or matched.
-    if (tailOfAugmentingPath.load()>-1){
-      vtxid_type grandparent = tailOfAugmentingPath.load();
+    if (tailOfAugmentingPath.load(std::memory_order_relaxed)>-1){
+      vtxid_type grandparent = tailOfAugmentingPath.load(std::memory_order_relaxed);
       vtxid_type parent, child;
       do {
         parent = visited[grandparent];
-        child = matching[parent];
-        matching[parent] = grandparent;
-        matching[grandparent] = parent;
+        child = matching[parent].load();
+        matching[parent].store(grandparent);
+        matching[grandparent].store(parent);
         grandparent = child;
       } while (grandparent != -1);
     }
