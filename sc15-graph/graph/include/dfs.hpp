@@ -165,6 +165,15 @@ bool try_to_mark_non_idempotent(std::atomic<Item>* visited, Index target) {
     return false;
   return true;
 }
+
+
+template <class Index, class Item>
+bool try_to_mark_non_idempotent(std::atomic<Item>* visited, Index target, Index desired) {
+  Item orig = -1;
+  if (! visited[target].compare_exchange_strong(orig, desired))
+    return false;
+  return true;
+}
   
 template <class Adjlist, class Item, bool idempotent>
 bool try_to_mark(const Adjlist& graph,
@@ -186,6 +195,43 @@ bool try_to_mark(const Adjlist& graph,
   }
 }
 
+
+template <class Adjlist, class Item, bool idempotent>
+bool try_to_mark(const Adjlist& graph,
+                 std::atomic<Item>* visited,
+                 std::atomic<Item>* matching,
+                 typename Adjlist::vtxid_type target,
+                 typename Adjlist::vtxid_type src) {
+  using vtxid_type = typename Adjlist::vtxid_type;
+  // If its already marked, cant mark.
+  if (visited[matching[target]].load(std::memory_order_relaxed)>-1)
+    return false;
+  // Mark the out next outside vertex with myself, an outside vertex.
+  return try_to_mark_non_idempotent<vtxid_type,Item>(visited, matching[target], src);
+}
+
+  
+template <class Adjlist, class Item, bool idempotent>
+bool try_to_match(const Adjlist& graph,
+                 std::atomic<Item>* visited,
+                 std::atomic<Item>* matching,
+                 std::atomic<Item>& tailOfAugmentingPath,
+                 typename Adjlist::vtxid_type target,
+                 typename Adjlist::vtxid_type src) {
+  using vtxid_type = typename Adjlist::vtxid_type;
+  const vtxid_type max_outdegree_for_idempotent = 30;
+  // If its visited, it cant be matched.
+  if (visited[target].load(std::memory_order_relaxed)>-1)
+    return false;
+  auto expected = -1;
+  if(matching[target].load()==-1&& tailOfAugmentingPath.compare_exchange_strong(expected, target)){
+    matching[target].store(src);
+    return true;
+  }
+  return false;
+
+}
+
 extern int our_pseudodfs_cutoff;
 extern int our_pseudodfs_poll_cutoff;
 extern int our_pseudodfs_split_cutoff;
@@ -202,12 +248,15 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
   using edgelist_type = typename Frontier::edgelist_type;
   vtxid_type nb_vertices = graph.get_nb_vertices();
   std::atomic<int>* visited = data::mynew_array<std::atomic<int>>(nb_vertices);
-  fill_array_par(visited, nb_vertices, 0);
+  fill_array_par(visited, nb_vertices, -1);
+  std::atomic<int>* matching = data::mynew_array<std::atomic<int>>(nb_vertices);
+  fill_array_par(matching, nb_vertices, -1);
+  std::atomic<int> tailOfAugmentingPath(-1);
   LOG_BASIC(ALGO_PHASE);
   auto graph_alias = get_alias_of_adjlist(graph);
   Frontier frontier(graph_alias);
   frontier.push_vertex_back(source);
-  visited[source].store(1, std::memory_order_relaxed);
+  visited[source].store(source, std::memory_order_relaxed);
   data::perworker::array<int> nb_since_last_split;
   nb_since_last_split.init(0);
   auto size = [&] (Frontier& frontier) {
@@ -235,12 +284,19 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
     return visited;
   PARALLEL_WHILE(frontier, size, fork, set_in_env, [&] (Frontier& frontier) {
       nb_since_last_split.mine() +=    
-        frontier.for_at_most_nb_outedges(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex) {
-          if (try_to_mark<Adjlist, int, idempotent>(graph, visited, other_vertex))
-            frontier.push_vertex_back(other_vertex);
+        frontier.for_at_most_nb_outedges_labeled(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex, vtxid_type src_vertex) {
+          // Once I find an AP, clear the frontiers.
+          if(tailOfAugmentingPath.load(std::memory_order_relaxed)>-1)
+            return;
+          if(try_to_match<Adjlist, int, idempotent>(graph, visited, matching, tailOfAugmentingPath, other_vertex, src_vertex)){
+          } else {
+            // I know this vertex is matched, thus matching[other_vertex]>-1, I try to mark that vertex.
+            if (try_to_mark<Adjlist, int, idempotent>(graph, visited, matching, other_vertex, src_vertex))
+              frontier.push_vertex_back(matching[other_vertex]);
+          }
     });
   });
-  return visited;
+  return matching;
 }
 
 

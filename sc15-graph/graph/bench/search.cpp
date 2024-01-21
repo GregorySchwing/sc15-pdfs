@@ -122,6 +122,22 @@ void report_common_results() {
 #endif
 }
   
+// TO GREG: OPTIMIZE THIS
+template <class Adjlist>
+void report_matching_results(const Adjlist& graph,
+                        std::atomic_int *visited) {
+  using vtxid_type = typename Adjlist::vtxid_type;
+  vtxid_type nb_vertices = graph.get_nb_vertices();
+  vtxid_type nb_visited = 0;
+  for (vtxid_type i = 0; i <nb_vertices; ++i){
+    nb_visited+=visited[i]>-1;
+    if(visited[i]>-1)
+      std::cout << "i "<<i<< "\t" << visited[i] << std::endl;
+
+  }
+  std::cout << "nb_matched\t" << nb_visited << std::endl;
+}
+
 template <class Adjlist, class Load_visited_fct>
 void report_dfs_results(const Adjlist& graph,
                         const Load_visited_fct& load_visited_fct) {
@@ -305,7 +321,7 @@ our_pseudodfs_permutation(const Adjlist& graph, typename Adjlist::vtxid_type sou
   }
   perm[source] = time++;
   while (frontier.nb_outedges() > 0) {
-    frontier.for_at_most_nb_outedges(our_pseudodfs_cutoff, [&](vtxid_type other_vertex) {
+    frontier.for_at_most_nb_outedges_labeled(our_pseudodfs_cutoff, [&](vtxid_type other_vertex,vtxid_type src_vertex) {
         if (visited[other_vertex] == 0) {
           visited[other_vertex] = 1;
           //        if (try_to_mark<Adjlist, int, idempotent>(graph, visited, other_vertex)) {
@@ -462,8 +478,10 @@ void search_benchmark_parallel_select_algo() {
   auto report = [&] (const adjlist_type& graph) {
     if (dists != nullptr)
       report_bfs_results(graph, unknown, [&] (vtxid_type i) { return dists[i].load(); });
-    else
-      report_dfs_results(graph, [&] (vtxid_type i) { return vtxid_type(visited[i].load()); });
+    else{
+      report_matching_results(graph, visited);
+      //report_dfs_results(graph, [&] (vtxid_type i) { return vtxid_type(visited[i].load()); });
+    }
   };
   auto destroy = [&] {
     if (dists != nullptr)

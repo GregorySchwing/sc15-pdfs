@@ -66,22 +66,28 @@ public:
   typedef typename edge_type::vtxid_type vtxid_type;
   typedef edgelist<Edge_bag> self_type;
   
+  vtxid_type label;
   vtxid_type nb_vertices;
   edge_bag_type edges;
   
   edgelist()
-  : nb_vertices(0) { }
+  : nb_vertices(0),label(-1) { }
   
-  edgelist(vtxid_type nb_vertices, edge_bag_type& other)
-  : nb_vertices(nb_vertices) {
+  edgelist(vtxid_type nb_vertices, edge_bag_type& other, vtxid_type _label)
+  : nb_vertices(nb_vertices), label(_label) {
     edges.swap(other);
   }
   
   void clear() {
     nb_vertices = 0;
     edges.clear();
+    label = -1;
   }
   
+  vtxid_type get_label() const {
+    return label;
+  }
+
   edgeid_type get_nb_edges() const {
     return edgeid_type(edges.size());
   }
@@ -100,6 +106,7 @@ public:
   void swap(self_type& other) {
     std::swap(nb_vertices, other.nb_vertices);
     edges.swap(other.edges);
+    std::swap(label,other.label);
   }
   
 };
