@@ -131,10 +131,12 @@ void report_matching_results(const Adjlist& graph,
   vtxid_type nb_visited = 0;
   for (vtxid_type i = 0; i <nb_vertices; ++i){
     nb_visited+=visited[i]>-1;
+    /*
     #ifndef NDEBUG
     if(visited[i]>-1)
       std::cout << "i "<<i<< "\t" << visited[i] << std::endl;
     #endif
+    */
   }
   std::cout << "nb_matched\t" << nb_visited << std::endl;
 }
