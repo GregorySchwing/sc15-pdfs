@@ -265,6 +265,12 @@ extern int our_pseudodfs_poll_cutoff;
 extern int our_pseudodfs_split_cutoff;
  
 #ifndef DISABLE_NEW_PSEUDODFS
+#define PARALLEL_WHILE_GOAL sched::native::parallel_while_cas_ri_goal
+#else
+#define PARALLEL_WHILE_GOAL sched::native::parallel_while
+#endif
+
+#ifndef DISABLE_NEW_PSEUDODFS
 #define PARALLEL_WHILE sched::native::parallel_while_cas_ri
 #else
 #define PARALLEL_WHILE sched::native::parallel_while
@@ -343,12 +349,12 @@ std::atomic<int>* our_pseudodfs(const Adjlist& graph, typename Adjlist::vtxid_ty
       frontier.push_vertex_back(i);
       nb_since_last_split.init(0);
       visited[i].store(i);
-      PARALLEL_WHILE(frontier, size, fork, set_in_env, [&] (Frontier& frontier) {
+      PARALLEL_WHILE_GOAL(frontier, size, fork, set_in_env, tailOfAugmentingPath, [&] (Frontier& frontier) {
           nb_since_last_split.mine() +=    
             frontier.for_at_most_nb_outedges_labeled(our_pseudodfs_poll_cutoff, [&](vtxid_type other_vertex, vtxid_type src_vertex) {
               if (try_to_mark_backtrack<Adjlist, int, idempotent>(graph, visited, other_vertex, src_vertex)){
                 if(matching[other_vertex]==-1){
-                  tailOfAugmentingPath.store(other_vertex, std::memory_order_relaxed);
+                  tailOfAugmentingPath.store(other_vertex);
                 } else {
                   frontier.push_vertex_back(matching[other_vertex]);
                 }
